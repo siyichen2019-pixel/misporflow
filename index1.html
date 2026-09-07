@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<button id="btn">开始录音</button>
+<pre id="raw"></pre>
+<pre id="out"></pre>
+
+<script>
+let mr, chunks = [], recording = false;
+
+btn.onclick = async () => {
+  if (!recording) {
+    const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+    mr = new MediaRecorder(stream);
+    chunks = [];
+    mr.ondataavailable = e => chunks.push(e.data);
+    mr.onstop = async () => {
+      raw.textContent = "处理中...";
+      const fd = new FormData();
+      fd.append("file", new Blob(chunks, {type: "audio/webm"}), "a.webm");
+      const t = await (await fetch("/transcribe", {method: "POST", body: fd})).json();
+      raw.textContent = t.text;
+      const f = await (await fetch("/make_it_flow", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({text: t.text})
+      })).json();
+      out.textContent = f.flowed;
+    };
+    mr.start();
+    btn.textContent = "停止";
+  } else {
+    mr.stop();
+    btn.textContent = "开始录音";
+  }
+  recording = !recording;
+};
+</script>

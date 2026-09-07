@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>test</title>
+
+<h3>1. 录音 → 文字</h3>
+<button id="rec">开始录音</button>
+<pre id="out1"></pre>
+
+<h3>2. 文字 → 整理</h3>
+<textarea id="inp" rows="5" cols="60"></textarea><br>
+<button id="flow">整理</button>
+<pre id="out2"></pre>
+
+<script>
+let mr, chunks = [], recording = false;
+
+rec.onclick = async () => {
+  if (!recording) {
+    const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+    mr = new MediaRecorder(stream);
+    chunks = [];
+    mr.ondataavailable = e => chunks.push(e.data);
+    mr.onstop = async () => {
+      out1.textContent = "转写中...";
+      const fd = new FormData();
+      fd.append("file", new Blob(chunks, {type: "audio/webm"}), "a.webm");
+      const r = await fetch("/transcribe", {method: "POST", body: fd});
+      out1.textContent = (await r.json()).text;
+      inp.value = out1.textContent;
+    };
+    mr.start();
+    rec.textContent = "停止录音";
+  } else {
+    mr.stop();
+    rec.textContent = "开始录音";
+  }
+  recording = !recording;
+};
+
+flow.onclick = async () => {
+  out2.textContent = "整理中...";
+  const r = await fetch("/make_it_flow", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({text: inp.value})
+  });
+  out2.textContent = (await r.json()).flowed;
+};
+</script>
