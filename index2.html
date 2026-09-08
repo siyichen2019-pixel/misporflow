@@ -1,7 +1,13 @@
 <!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>whisperflow</title>
+<title>MisporFlow</title>
+<link rel="manifest" href="/static/manifest.json">
+<meta name="theme-color" content="#1a1a1a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="MisporFlow">
+<link rel="apple-touch-icon" href="/static/icon-192.png">
 <style>
   body {
     font: 15px/1.6 -apple-system, system-ui, sans-serif;
@@ -69,7 +75,21 @@
 </div>
 
 <script>
-let mr, chunks = [], recording = false;
+let mr, chunks = [], recording = false, mime = "audio/webm";
+
+function pickMime() {
+  const candidates = ["audio/webm", "audio/mp4", "audio/aac"];
+  for (const c of candidates) {
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported(c)) return c;
+  }
+  return "";
+}
+
+function extFor(m) {
+  if (m.includes("webm")) return "webm";
+  if (m.includes("mp4") || m.includes("aac")) return "mp4";
+  return "webm";
+}
 
 function setStatus(text, live) {
   status.innerHTML = live ? '<span class="dot"></span>' + text : text;
@@ -118,16 +138,24 @@ btn.onclick = async () => {
       setStatus("Microphone blocked. Check your browser permissions.");
       return;
     }
-    mr = new MediaRecorder(stream);
+    mime = pickMime();
+    try {
+      mr = mime ? new MediaRecorder(stream, {mimeType: mime}) : new MediaRecorder(stream);
+    } catch (e) {
+      stream.getTracks().forEach(t => t.stop());
+      setStatus("Recording not supported in this browser.");
+      return;
+    }
+    if (!mime) mime = mr.mimeType || "audio/webm";
     chunks = [];
-    mr.ondataavailable = e => chunks.push(e.data);
+    mr.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
     mr.onstop = async () => {
       stream.getTracks().forEach(t => t.stop());
       busy(raw, "Transcribing…");
       out.value = "";
       out.placeholder = "";
       const fd = new FormData();
-      fd.append("file", new Blob(chunks, {type: "audio/webm"}), "a.webm");
+      fd.append("file", new Blob(chunks, {type: mime}), "a." + extFor(mime));
       try {
         const r = await fetch("/transcribe", {method: "POST", body: fd});
         if (!r.ok) throw new Error(r.status);
@@ -170,4 +198,8 @@ document.addEventListener("keyup", e => {
 window.addEventListener("blur", () => {
   if (recording) btn.click();
 });
+
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js");
+}
 </script>

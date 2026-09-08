@@ -11,6 +11,10 @@ client = OpenAI(api_key=api_key)
 def index():
     return send_file("index2.html")
 
+@app.route("/sw.js")
+def sw():
+    return send_file("sw.js", mimetype="application/javascript")
+
 #说话：按下按钮，开始说话 -- 停下按钮，语音转文字
 # input 是 语音 output是 文字
 @app.route("/transcribe", methods=["POST"])
