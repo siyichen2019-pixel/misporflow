@@ -37,6 +37,13 @@
     resize: vertical;
   }
   textarea:focus { outline: none; border-color: #888; }
+  #code {
+    width: 100%; box-sizing: border-box;
+    font: 14px/1.6 ui-monospace, Menlo, Consolas, monospace;
+    padding: 8px 10px;
+    border: 1px solid #ccc; border-radius: 6px;
+  }
+  #code:focus { outline: none; border-color: #888; }
   @keyframes pulse { 0%, 100% { opacity: 1 } 50% { opacity: .45 } }
   textarea.busy::placeholder { animation: pulse 1.4s ease-in-out infinite; }
   .dot {
@@ -50,6 +57,16 @@
 <div class="bar">
   <button id="btn">Record</button>
   <span id="status">Hold Option to record</span>
+</div>
+
+<div class="field">
+  <div class="head">
+    <label for="code">Access code</label>
+    <div class="actions">
+      <button class="small" id="peek" type="button" aria-label="Show code">Show</button>
+    </div>
+  </div>
+  <input id="code" type="password" placeholder="paste the code you were given">
 </div>
 
 <div class="field">
@@ -76,6 +93,45 @@
 
 <script>
 let mr, chunks = [], recording = false, mime = "audio/webm";
+
+// 共享暗号：服务器认这个才干活。存浏览器里，填一次就行。
+code.value = localStorage.getItem("code") || "";
+code.onchange = code.onblur = () => localStorage.setItem("code", code.value.trim());
+const auth = () => ({"X-Access-Code": code.value.trim()});
+
+peek.onclick = () => {
+  const hidden = code.type === "password";
+  code.type = hidden ? "text" : "password";
+  peek.textContent = hidden ? "Hide" : "Show";
+  peek.setAttribute("aria-label", hidden ? "Hide code" : "Show code");
+};
+
+// 静音检测：Whisper 拿到静音会瞎编（"谢谢观看"之类），所以静音根本不发出去。
+const LOUD = 0.02, LOUD_FRAMES = 3, MIN_MS = 400;
+let audioCtx = null, meterTimer = null, loudFrames = 0, startedAt = 0;
+
+function startMeter(stream) {
+  loudFrames = 0;
+  startedAt = Date.now();
+  audioCtx = new AudioContext();
+  const analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 2048;
+  audioCtx.createMediaStreamSource(stream).connect(analyser);
+  const buf = new Float32Array(analyser.fftSize);
+  meterTimer = setInterval(() => {
+    analyser.getFloatTimeDomainData(buf);
+    let sum = 0;
+    for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+    if (Math.sqrt(sum / buf.length) > LOUD) loudFrames++;
+  }, 100);
+}
+
+function stopMeter() {
+  clearInterval(meterTimer);
+  meterTimer = null;
+  if (audioCtx) { audioCtx.close(); audioCtx = null; }
+  return loudFrames >= LOUD_FRAMES && Date.now() - startedAt >= MIN_MS;
+}
 
 function pickMime() {
   const candidates = ["audio/webm", "audio/mp4", "audio/aac"];
@@ -119,13 +175,16 @@ async function flow(text) {
   try {
     const r = await fetch("/make_it_flow", {
       method: "POST",
-      headers: {"Content-Type": "application/json"},
+      headers: {"Content-Type": "application/json", ...auth()},
       body: JSON.stringify({text})
     });
+    if (r.status === 401) throw new Error("code");
     if (!r.ok) throw new Error(r.status);
     done(out, (await r.json()).flowed);
   } catch (e) {
-    fail(out, "Couldn't polish that. Hit Re-polish to try again.");
+    fail(out, e.message === "code"
+      ? "Access code missing or wrong."
+      : "Couldn't polish that. Hit Re-polish to try again.");
   }
 }
 
@@ -150,23 +209,32 @@ btn.onclick = async () => {
     chunks = [];
     mr.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
     mr.onstop = async () => {
+      const heard = stopMeter();
       stream.getTracks().forEach(t => t.stop());
+      if (!heard) {
+        setStatus("Didn't hear anything. Try again.");
+        return;
+      }
       busy(raw, "Transcribing…");
       out.value = "";
       out.placeholder = "";
       const fd = new FormData();
       fd.append("file", new Blob(chunks, {type: mime}), "a." + extFor(mime));
       try {
-        const r = await fetch("/transcribe", {method: "POST", body: fd});
+        const r = await fetch("/transcribe", {method: "POST", headers: auth(), body: fd});
+        if (r.status === 401) throw new Error("code");
         if (!r.ok) throw new Error(r.status);
         const t = await r.json();
         done(raw, t.text);
         await flow(t.text);
       } catch (e) {
-        fail(raw, "Couldn't transcribe that. Record again.");
+        fail(raw, e.message === "code"
+          ? "Access code missing or wrong."
+          : "Couldn't transcribe that. Record again.");
       }
     };
     mr.start();
+    startMeter(stream);
     btn.textContent = "Stop";
     setStatus("Recording…", true);
   } else {
