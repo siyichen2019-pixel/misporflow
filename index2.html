@@ -15,16 +15,17 @@ btn.onclick = async () => {
     mr.ondataavailable = e => chunks.push(e.data);
     mr.onstop = async () => {
       raw.textContent = "处理中...";
+      out.textContent = "";
       const fd = new FormData();
       fd.append("file", new Blob(chunks, {type: "audio/webm"}), "a.webm");
       const t = await (await fetch("/transcribe", {method: "POST", body: fd})).json();
-      raw.textContent = t.text;
+      raw.textContent = "原文：" + t.text;
       const f = await (await fetch("/make_it_flow", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({text: t.text})
       })).json();
-      out.textContent = f.flowed;
+      out.textContent = "调整后：" + f.flowed;
       await navigator.clipboard.writeText(f.flowed);
     };
     mr.start();

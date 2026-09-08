@@ -9,7 +9,7 @@ client = OpenAI(api_key=api_key)
 
 @app.route("/")
 def index():
-    return send_file("index2.html")
+    return send_file("index.html")
 
 #说话：按下按钮，开始说话 -- 停下按钮，语音转文字
 # input 是 语音 output是 文字
