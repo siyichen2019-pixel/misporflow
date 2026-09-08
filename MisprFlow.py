@@ -1,9 +1,11 @@
 import os
 from openai import OpenAI
 from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
 from prompt import prompt
 
 app = Flask(__name__)
+CORS(app)
 api_key = os.getenv("OPENAI_API_KEY")
 client = OpenAI(api_key=api_key)
 
