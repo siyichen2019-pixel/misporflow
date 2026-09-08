@@ -1,4 +1,4 @@
-const CACHE = "whisperflow-v1";
+const CACHE = "mispor-flow";
 const SHELL = ["/", "/static/icon-192.png", "/static/icon-512.png"];
 
 self.addEventListener("install", e => {
