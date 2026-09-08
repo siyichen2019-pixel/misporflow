@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>whisperflow</title>
 <style>
   body {
@@ -30,6 +31,14 @@
     resize: vertical;
   }
   textarea:focus { outline: none; border-color: #888; }
+  @keyframes pulse { 0%, 100% { opacity: 1 } 50% { opacity: .45 } }
+  textarea.busy::placeholder { animation: pulse 1.4s ease-in-out infinite; }
+  .dot {
+    display: inline-block; width: 6px; height: 6px;
+    border-radius: 50%; background: #c0392b;
+    margin-right: 6px; vertical-align: middle;
+    animation: pulse 1.2s ease-in-out infinite;
+  }
 </style>
 
 <div class="bar">
@@ -63,37 +72,71 @@
 let mr, chunks = [], recording = false;
 
 function setStatus(text, live) {
-  status.textContent = text;
+  status.innerHTML = live ? '<span class="dot"></span>' + text : text;
   status.className = live ? "live" : "";
 }
 
+function busy(el, text) {
+  el.value = "";
+  el.placeholder = text;
+  el.classList.add("busy");
+}
+
+function done(el, text) {
+  el.classList.remove("busy");
+  el.placeholder = "";
+  el.value = text;
+}
+
+function fail(el, message) {
+  el.classList.remove("busy");
+  el.value = "";
+  el.placeholder = message;
+}
+
 async function flow(text) {
-  setStatus("Polishing…");
-  const f = await (await fetch("/make_it_flow", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({text})
-  })).json();
-  out.value = f.flowed;
-  setStatus("Hold Option to record");
+  busy(out, "Polishing…");
+  try {
+    const r = await fetch("/make_it_flow", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({text})
+    });
+    if (!r.ok) throw new Error(r.status);
+    done(out, (await r.json()).flowed);
+  } catch (e) {
+    fail(out, "Couldn't polish that. Hit Re-polish to try again.");
+  }
 }
 
 btn.onclick = async () => {
   if (!recording) {
-    const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({audio: true});
+    } catch (e) {
+      setStatus("Microphone blocked. Check your browser permissions.");
+      return;
+    }
     mr = new MediaRecorder(stream);
     chunks = [];
     mr.ondataavailable = e => chunks.push(e.data);
     mr.onstop = async () => {
       stream.getTracks().forEach(t => t.stop());
-      setStatus("Transcribing…");
-      raw.value = "";
+      busy(raw, "Transcribing…");
       out.value = "";
+      out.placeholder = "";
       const fd = new FormData();
       fd.append("file", new Blob(chunks, {type: "audio/webm"}), "a.webm");
-      const t = await (await fetch("/transcribe", {method: "POST", body: fd})).json();
-      raw.value = t.text;
-      await flow(t.text);
+      try {
+        const r = await fetch("/transcribe", {method: "POST", body: fd});
+        if (!r.ok) throw new Error(r.status);
+        const t = await r.json();
+        done(raw, t.text);
+        await flow(t.text);
+      } catch (e) {
+        fail(raw, "Couldn't transcribe that. Record again.");
+      }
     };
     mr.start();
     btn.textContent = "Stop";
@@ -101,6 +144,7 @@ btn.onclick = async () => {
   } else {
     mr.stop();
     btn.textContent = "Record";
+    setStatus("Hold Option to record");
   }
   recording = !recording;
 };
@@ -122,5 +166,8 @@ document.addEventListener("keydown", e => {
 });
 document.addEventListener("keyup", e => {
   if (e.key === "Alt" && recording) btn.click();
+});
+window.addEventListener("blur", () => {
+  if (recording) btn.click();
 });
 </script>
