@@ -5,13 +5,30 @@ from flask_cors import CORS
 from prompt import prompt
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, allow_headers=["Content-Type", "X-Access-Code"])
+
+
+ACCESS_CODE = os.getenv("ACCESS_CODE")
+
+
 api_key = os.getenv("OPENAI_API_KEY")
 client = OpenAI(api_key=api_key)
+
 
 @app.route("/")
 def index():
     return send_file("index2.html")
+
+@app.before_request
+def guard():
+    if request.method == "OPTIONS":
+        return
+    if request.path not in ("/transcribe", "/make_it_flow"):
+        return
+    if not ACCESS_CODE:
+        return jsonify({"error": "server has no ACCESS_CODE set"}), 500
+    if request.headers.get("X-Access-Code") != ACCESS_CODE:
+        return jsonify({"error": "wrong code"}), 401
 
 @app.route("/sw.js")
 def sw():
