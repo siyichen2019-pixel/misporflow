@@ -1,11 +1,82 @@
 <!DOCTYPE html>
 <meta charset="utf-8">
-<button id="btn">开始录音</button>
-<pre id="raw"></pre>
-<pre id="out"></pre>
+<title>whisperflow</title>
+<style>
+  body {
+    font: 15px/1.6 -apple-system, system-ui, sans-serif;
+    max-width: 640px;
+    margin: 40px auto;
+    padding: 0 20px;
+    color: #1a1a1a;
+  }
+  .bar { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; }
+  button { font: inherit; padding: 6px 14px; cursor: pointer; }
+  button.small { font-size: 13px; padding: 3px 10px; }
+  #status { font-size: 13px; color: #888; }
+  #status.live { color: #c0392b; }
+  .field { margin-bottom: 20px; }
+  .head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 6px;
+  }
+  .head label { font-size: 13px; color: #666; }
+  .head .actions { display: flex; align-items: center; gap: 8px; }
+  .hint { font-size: 12px; color: #2e7d32; visibility: hidden; }
+  textarea {
+    width: 100%; box-sizing: border-box;
+    font: 14px/1.6 ui-monospace, Menlo, Consolas, monospace;
+    padding: 8px 10px;
+    border: 1px solid #ccc; border-radius: 6px;
+    resize: vertical;
+  }
+  textarea:focus { outline: none; border-color: #888; }
+</style>
+
+<div class="bar">
+  <button id="btn">Record</button>
+  <span id="status">Hold Option to record</span>
+</div>
+
+<div class="field">
+  <div class="head">
+    <label for="raw">Transcript</label>
+    <div class="actions">
+      <button class="small" data-copy="raw">Copy</button>
+    </div>
+  </div>
+  <textarea id="raw" rows="3"></textarea>
+</div>
+
+<div class="field">
+  <div class="head">
+    <label for="out">Polished</label>
+    <div class="actions">
+      <span class="hint" id="hint">Copied</span>
+      <button class="small" id="repolish">Re-polish</button>
+      <button class="small" data-copy="out">Copy</button>
+    </div>
+  </div>
+  <textarea id="out" rows="3"></textarea>
+</div>
 
 <script>
 let mr, chunks = [], recording = false;
+
+function setStatus(text, live) {
+  status.textContent = text;
+  status.className = live ? "live" : "";
+}
+
+async function flow(text) {
+  setStatus("Polishing…");
+  const f = await (await fetch("/make_it_flow", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({text})
+  })).json();
+  out.value = f.flowed;
+  setStatus("Hold Option to record");
+}
 
 btn.onclick = async () => {
   if (!recording) {
@@ -14,31 +85,40 @@ btn.onclick = async () => {
     chunks = [];
     mr.ondataavailable = e => chunks.push(e.data);
     mr.onstop = async () => {
-      raw.textContent = "处理中...";
-      out.textContent = "";
+      stream.getTracks().forEach(t => t.stop());
+      setStatus("Transcribing…");
+      raw.value = "";
+      out.value = "";
       const fd = new FormData();
       fd.append("file", new Blob(chunks, {type: "audio/webm"}), "a.webm");
       const t = await (await fetch("/transcribe", {method: "POST", body: fd})).json();
-      raw.textContent = "原文：" + t.text;
-      const f = await (await fetch("/make_it_flow", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({text: t.text})
-      })).json();
-      out.textContent = "调整后：" + f.flowed;
-      await navigator.clipboard.writeText(f.flowed);
+      raw.value = t.text;
+      await flow(t.text);
     };
     mr.start();
-    btn.textContent = "停止";
+    btn.textContent = "Stop";
+    setStatus("Recording…", true);
   } else {
     mr.stop();
-    btn.textContent = "开始录音";
+    btn.textContent = "Record";
   }
   recording = !recording;
 };
 
+repolish.onclick = () => {
+  if (raw.value.trim()) flow(raw.value);
+};
+
+document.querySelectorAll("[data-copy]").forEach(b => {
+  b.onclick = async () => {
+    await navigator.clipboard.writeText(document.getElementById(b.dataset.copy).value);
+    hint.style.visibility = "visible";
+    setTimeout(() => hint.style.visibility = "hidden", 1200);
+  };
+});
+
 document.addEventListener("keydown", e => {
-  if (e.key === "Alt" && !recording) btn.click();
+  if (e.key === "Alt" && !recording && document.activeElement.tagName !== "TEXTAREA") btn.click();
 });
 document.addEventListener("keyup", e => {
   if (e.key === "Alt" && recording) btn.click();
