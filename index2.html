@@ -27,4 +27,254 @@
 
   #s1 { text-align: center; }
   #rec {
-    width: 96px; height: 96px;
+    width: 96px; height: 96px; border-radius: 50%;
+    border: 1px solid #ccc; background: #fff;
+    display: flex; align-items: center; justify-content: center;
+    margin: 0 auto; padding: 0;
+  }
+  #rec.live { border-color: #c0392b; color: #c0392b; }
+  #cap { font-size: 13px; line-height: 1.7; color: #888; margin: 20px 0 0; }
+  #cap.live, #cap.err { color: #c0392b; }
+  #after { visibility: hidden; margin-top: 24px; }
+  #copied { font-size: 13px; color: #2e7d32; margin: 0 0 10px; }
+
+  #s2 { display: none; }
+  .label { font-size: 12px; color: #888; margin: 20px 0 6px; }
+  textarea {
+    width: 100%; box-sizing: border-box;
+    font: 14px/1.7 -apple-system, system-ui, sans-serif;
+    padding: 10px 12px;
+    border: 1px solid #ccc; border-radius: 8px;
+    resize: vertical;
+  }
+  textarea:focus { outline: none; border-color: #888; }
+  .row { display: flex; gap: 8px; margin-top: 10px; align-items: center; }
+  details { margin-top: 20px; }
+  summary { font-size: 12px; color: #888; cursor: pointer; }
+  #raw { margin-top: 8px; font-size: 13px; color: #555; }
+
+  @keyframes pulse { 0%, 100% { opacity: 1 } 50% { opacity: .45 } }
+  .busy { animation: pulse 1.4s ease-in-out infinite; }
+</style>
+
+<div id="s1">
+  <button id="rec" aria-label="Record">
+    <svg id="icon" width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <rect x="9" y="2" width="6" height="11" rx="3"></rect>
+      <path d="M5 10v2a7 7 0 0 0 14 0v-2"></path>
+      <line x1="12" y1="19" x2="12" y2="22"></line>
+    </svg>
+  </button>
+  <p id="cap">Press ⌘X to start recording</p>
+  <div id="after">
+    <p id="copied">Copied — ⌘V to paste</p>
+    <button class="link" id="go">See details →</button>
+  </div>
+</div>
+
+<div id="s2">
+  <button class="link" id="back">← Back</button>
+  <p class="label">Polished</p>
+  <textarea id="out" rows="5"></textarea>
+  <div class="row">
+    <button class="small" id="copy">Copy</button>
+    <button class="small" id="repolish">Re-polish</button>
+    <span id="hint" style="font-size:12px;color:#2e7d32;visibility:hidden">Copied</span>
+  </div>
+  <details>
+    <summary>Raw transcript</summary>
+    <textarea id="raw" rows="3"></textarea>
+  </details>
+</div>
+
+<script>
+const rec = document.getElementById("rec");
+const icon = document.getElementById("icon");
+
+const MIC = '<rect x="9" y="2" width="6" height="11" rx="3"></rect><path d="M5 10v2a7 7 0 0 0 14 0v-2"></path><line x1="12" y1="19" x2="12" y2="22"></line>';
+const STOP = '<rect x="6" y="6" width="12" height="12" rx="2"></rect>';
+const cap = document.getElementById("cap");
+const after = document.getElementById("after");
+const copied = document.getElementById("copied");
+const s1 = document.getElementById("s1");
+const s2 = document.getElementById("s2");
+const out = document.getElementById("out");
+const raw = document.getElementById("raw");
+const hint = document.getElementById("hint");
+
+let mr, chunks = [], recording = false, mime = "audio/webm";
+
+function say(text, cls) {
+  cap.textContent = text;
+  cap.className = cls || "";
+}
+
+function show(page) {
+  s1.style.display = page === 1 ? "block" : "none";
+  s2.style.display = page === 2 ? "block" : "none";
+}
+
+// 静音检测：Whisper 拿到静音会瞎编（"谢谢观看"之类），所以静音根本不发出去。
+const LOUD = 0.02, LOUD_FRAMES = 3, MIN_MS = 400;
+let audioCtx = null, meterTimer = null, loudFrames = 0, startedAt = 0;
+
+function startMeter(stream) {
+  loudFrames = 0;
+  startedAt = Date.now();
+  audioCtx = new AudioContext();
+  const analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 2048;
+  audioCtx.createMediaStreamSource(stream).connect(analyser);
+  const buf = new Float32Array(analyser.fftSize);
+  meterTimer = setInterval(() => {
+    analyser.getFloatTimeDomainData(buf);
+    let sum = 0;
+    for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+    if (Math.sqrt(sum / buf.length) > LOUD) loudFrames++;
+  }, 100);
+}
+
+function stopMeter() {
+  clearInterval(meterTimer);
+  meterTimer = null;
+  if (audioCtx) { audioCtx.close(); audioCtx = null; }
+  return loudFrames >= LOUD_FRAMES && Date.now() - startedAt >= MIN_MS;
+}
+
+function pickMime() {
+  for (const c of ["audio/webm", "audio/mp4", "audio/aac"]) {
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported(c)) return c;
+  }
+  return "";
+}
+
+function extFor(m) {
+  if (m.includes("webm")) return "webm";
+  if (m.includes("mp4") || m.includes("aac")) return "mp4";
+  return "webm";
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function flow(text) {
+  say("Polishing…", "busy");
+  try {
+    const r = await fetch("/make_it_flow", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({text})
+    });
+    if (!r.ok) throw new Error(r.status);
+    const flowed = (await r.json()).flowed;
+    out.value = flowed;
+    const ok = await copyText(flowed);
+    copied.textContent = ok ? "Copied — ⌘V to paste" : "Done — open it to copy";
+    say(flowed);
+    after.style.visibility = "visible";
+  } catch (e) {
+    say("Couldn't polish that. Open it and hit Re-polish.", "err");
+    copied.textContent = "Transcript saved";
+    after.style.visibility = "visible";
+  }
+}
+
+async function start() {
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({audio: true});
+  } catch (e) {
+    say("Microphone blocked. Check your browser permissions.", "err");
+    return;
+  }
+  mime = pickMime();
+  try {
+    mr = mime ? new MediaRecorder(stream, {mimeType: mime}) : new MediaRecorder(stream);
+  } catch (e) {
+    stream.getTracks().forEach(t => t.stop());
+    say("Recording not supported in this browser.", "err");
+    return;
+  }
+  if (!mime) mime = mr.mimeType || "audio/webm";
+  chunks = [];
+  mr.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+  mr.onstop = async () => {
+    const heard = stopMeter();
+    stream.getTracks().forEach(t => t.stop());
+    rec.className = "";
+    icon.innerHTML = MIC;
+    if (!heard) {
+      say("Didn't hear anything. Try again.", "err");
+      return;
+    }
+    say("Transcribing…", "busy");
+    const fd = new FormData();
+    fd.append("file", new Blob(chunks, {type: mime}), "a." + extFor(mime));
+    try {
+      const r = await fetch("/transcribe", {method: "POST", body: fd});
+      if (!r.ok) throw new Error(r.status);
+      const t = await r.json();
+      raw.value = t.text;
+      await flow(t.text);
+    } catch (e) {
+      say("Couldn't transcribe that. Record again.", "err");
+    }
+  };
+  mr.start();
+  startMeter(stream);
+  recording = true;
+  rec.className = "live";
+  icon.innerHTML = STOP;
+  after.style.visibility = "hidden";
+  say("Recording… release to stop", "live");
+}
+
+function stop() {
+  if (!recording) return;
+  recording = false;
+  mr.stop();
+}
+
+rec.onclick = () => recording ? stop() : start();
+
+document.getElementById("go").onclick = () => show(2);
+document.getElementById("back").onclick = () => show(1);
+
+document.getElementById("copy").onclick = async () => {
+  if (await copyText(out.value)) {
+    hint.style.visibility = "visible";
+    setTimeout(() => hint.style.visibility = "hidden", 1200);
+  }
+};
+
+document.getElementById("repolish").onclick = () => {
+  if (raw.value.trim()) {
+    show(1);
+    flow(raw.value);
+  }
+};
+
+const typing = () => ["INPUT", "TEXTAREA"].includes(document.activeElement.tagName);
+
+// ⌘X 按住说话。preventDefault 挡掉浏览器的剪切。
+document.addEventListener("keydown", e => {
+  if (e.metaKey && e.key.toLowerCase() === "x" && !typing()) {
+    e.preventDefault();
+    if (!recording && !e.repeat) start();
+  }
+});
+document.addEventListener("keyup", e => {
+  if (recording && (e.key.toLowerCase() === "x" || e.key === "Meta")) stop();
+});
+window.addEventListener("blur", stop);
+
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js");
+}
+</script>
